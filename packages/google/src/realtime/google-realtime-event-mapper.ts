@@ -15,6 +15,12 @@ type GoogleRealtimeFunctionCall = {
   args?: Record<string, unknown>;
 };
 
+type GoogleRealtimeTranscription = {
+  text?: string;
+  /** Marks the end of the transcription of one user utterance. */
+  finished?: boolean;
+};
+
 type GoogleRealtimeServerContent = {
   generationComplete?: boolean;
   interactionStatus?: string;
@@ -26,7 +32,7 @@ type GoogleRealtimeServerContent = {
     }>;
   };
   outputTranscription?: { text?: string };
-  inputTranscription?: { text?: string };
+  inputTranscription?: GoogleRealtimeTranscription;
   turnComplete?: boolean;
   waitingForInput?: boolean;
 };
@@ -38,7 +44,7 @@ type GoogleRealtimeWireEvent = {
   };
   toolCallCancellation?: unknown;
   serverContent?: GoogleRealtimeServerContent;
-  inputTranscription?: { text?: string };
+  inputTranscription?: GoogleRealtimeTranscription;
   goAway?: { timeLeft?: string };
   sessionResumptionUpdate?: {
     newHandle?: string;
@@ -61,6 +67,9 @@ export class GoogleRealtimeEventMapper {
   private hasTranscript = false;
   private turnClosed = false;
   private inputAudioRate = 16000;
+  private inputCounter = 0;
+  private inputUtterance: { turnSlot: number; text: string } | undefined;
+  private inputFinishedSeen = false;
 
   private get responseId(): string {
     return `google-resp-${this.turnCounter}`;
@@ -68,6 +77,67 @@ export class GoogleRealtimeEventMapper {
 
   private get itemId(): string {
     return `google-item-${this.turnCounter}`;
+  }
+
+  /**
+   * The model turn that user speech arriving now leads into: the current turn
+   * while it is open, the next one once it is closed (`turnComplete` or
+   * `interrupted`). `turnComplete` after `interrupted` does not change it.
+   */
+  private get turnSlot(): number {
+    return this.turnClosed ? this.turnCounter + 1 : this.turnCounter;
+  }
+
+  /**
+   * Maps one Google input transcription fragment.
+   *
+   * Google streams one user utterance as several fragments (e.g. "What time",
+   * " is it?") and sends them independently of the other server messages, with
+   * no guaranteed ordering. `input-transcription-completed` replaces the
+   * message for its item id, so the running transcript of the utterance is
+   * emitted.
+   *
+   * An utterance ends with a `finished` transcription. Once the session has
+   * sent one, `finished` alone decides utterance boundaries, so fragments
+   * arriving on either side of `interrupted` / `turnComplete` stay with their
+   * utterance. Until then, an utterance ends when the model turn it leads into
+   * changes.
+   */
+  private mapInputTranscription(
+    transcription: GoogleRealtimeTranscription,
+    raw: unknown,
+  ): RealtimeModelV4ServerEvent | undefined {
+    const finished = transcription.finished === true;
+    if (finished) this.inputFinishedSeen = true;
+
+    if (
+      !this.inputFinishedSeen &&
+      this.inputUtterance != null &&
+      this.inputUtterance.turnSlot !== this.turnSlot
+    ) {
+      this.closeInputUtterance();
+    }
+
+    let event: RealtimeModelV4ServerEvent | undefined;
+    if (transcription.text) {
+      this.inputUtterance ??= { turnSlot: this.turnSlot, text: '' };
+      this.inputUtterance.text += transcription.text;
+      event = {
+        type: 'input-transcription-completed',
+        itemId: `google-input-${this.inputCounter}`,
+        transcript: this.inputUtterance.text,
+        raw,
+      };
+    }
+
+    if (finished) this.closeInputUtterance();
+    return event;
+  }
+
+  private closeInputUtterance(): void {
+    if (this.inputUtterance == null) return;
+    this.inputUtterance = undefined;
+    this.inputCounter++;
   }
 
   /**
@@ -151,13 +221,8 @@ export class GoogleRealtimeEventMapper {
       return this.parseServerContent(data.serverContent, raw);
     }
 
-    if (data.inputTranscription?.text != null) {
-      return {
-        type: 'input-transcription-completed',
-        itemId: `google-input-${this.turnCounter}`,
-        transcript: data.inputTranscription.text,
-        raw,
-      };
+    if (data.inputTranscription != null) {
+      return this.mapInputTranscription(data.inputTranscription, raw) ?? [];
     }
 
     return { type: 'custom', rawType: String(Object.keys(data)[0]), raw };
@@ -170,6 +235,10 @@ export class GoogleRealtimeEventMapper {
     const events: RealtimeModelV4ServerEvent[] = [];
 
     if (serverContent.interrupted) {
+      // An interruption ends the current model turn; `turnComplete` may follow
+      // late or not at all. Close the turn now so the interrupting speech and
+      // the next response do not continue the interrupted turn.
+      this.turnClosed = true;
       events.push({
         type: 'speech-started',
         raw,
@@ -214,13 +283,12 @@ export class GoogleRealtimeEventMapper {
       });
     }
 
-    if (serverContent.inputTranscription?.text) {
-      events.push({
-        type: 'input-transcription-completed',
-        itemId: `google-input-${this.turnCounter}`,
-        transcript: serverContent.inputTranscription.text,
+    if (serverContent.inputTranscription != null) {
+      const event = this.mapInputTranscription(
+        serverContent.inputTranscription,
         raw,
-      });
+      );
+      if (event != null) events.push(event);
     }
 
     // `generationComplete` means generation has stopped, but playback and the
