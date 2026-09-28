@@ -4,14 +4,14 @@ export default defineConfig([
   {
     entry: ['src/index.ts'],
     format: ['esm'],
-    dts: true,
+    dts: false,
     sourcemap: true,
     platform: 'node',
   },
   {
     entry: ['src/with-vitest.ts'],
     format: ['esm'],
-    dts: true,
+    dts: false,
     sourcemap: true,
     platform: 'node',
     external: [
@@ -26,5 +26,13 @@ export default defineConfig([
       'vitest/dist/node/*',
       'vitest/dist/node/chunks/*',
     ],
+  },
+  {
+    entry: {
+      index: 'src/index.ts',
+      'with-vitest': 'src/with-vitest.ts',
+    },
+    dts: { only: true },
+    format: ['esm'],
   },
 ]);
