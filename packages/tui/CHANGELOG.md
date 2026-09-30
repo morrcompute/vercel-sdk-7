@@ -1,5 +1,11 @@
 # @ai-sdk/tui
 
+## 1.0.125
+
+### Patch Changes
+
+- ai@7.0.124
+
 ## 1.0.124
 
 ### Patch Changes
