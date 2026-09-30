@@ -135,6 +135,7 @@ export type ChatStatus = 'submitted' | 'streaming' | 'ready' | 'error';
 type ActiveResponse<UI_MESSAGE extends UIMessage> = {
   state: StreamingUIMessageState<UI_MESSAGE>;
   abortController: AbortController;
+  finished: Promise<void>;
 };
 
 type ActiveResumeRequest = {
@@ -662,13 +663,20 @@ export abstract class AbstractChat<UI_MESSAGE extends UIMessage> {
 
   /**
    * Abort the current request immediately, keep the generated tokens if any.
+   *
+   * The returned promise resolves after the active stream pipeline has fully
+   * terminated, so `status` is no longer `streaming` when it settles.
    */
   stop = async () => {
+    const activeResponse = this.activeResponse;
+
     for (const controller of this.pendingMessagePreparations) {
       controller.abort();
     }
     this.activeResumeRequest?.abortController.abort();
-    this.activeResponse?.abortController.abort();
+    activeResponse?.abortController.abort();
+
+    await activeResponse?.finished;
   };
 
   private async shouldSendAutomatically(): Promise<boolean> {
@@ -835,6 +843,7 @@ export abstract class AbstractChat<UI_MESSAGE extends UIMessage> {
     let isDisconnect = false;
     let isError = false;
     let activeResponse: ActiveResponse<UI_MESSAGE> | undefined;
+    let resolveActiveResponseFinished: (() => void) | undefined;
 
     try {
       const response = {
@@ -851,6 +860,9 @@ export abstract class AbstractChat<UI_MESSAGE extends UIMessage> {
                 messageId: this.generateId(),
               }),
         abortController,
+        finished: new Promise<void>(resolve => {
+          resolveActiveResponseFinished = resolve;
+        }),
       } as ActiveResponse<UI_MESSAGE>;
 
       activeResponse = response;
@@ -1009,6 +1021,7 @@ export abstract class AbstractChat<UI_MESSAGE extends UIMessage> {
         }
 
         clearActiveResumeRequest();
+        resolveActiveResponseFinished?.();
       }
     }
 
