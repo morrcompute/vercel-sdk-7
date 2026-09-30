@@ -1,5 +1,13 @@
 # @ai-sdk/gateway
 
+## 4.0.102
+
+### Patch Changes
+
+- e25994e: fix(gateway): scope `getCredits()` to `teamIdOrSlug`
+
+  The credits endpoint reads the team from the `teamId` / `slug` query parameter rather than the `x-vercel-ai-gateway-team` header. `getCredits()` now forwards the configured team as a query parameter, so credentials that can access multiple teams (such as Vercel access tokens) are no longer rejected with an authentication error.
+
 ## 4.0.101
 
 ### Patch Changes
